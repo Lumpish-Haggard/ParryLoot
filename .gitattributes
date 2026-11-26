@@ -1,0 +1,16 @@
+# Normalise line endings
+* text=auto eol=lf
+
+# Windows scripts and INI keep CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ini text eol=crlf
+
+# Binary files
+*.dll binary
+*.exe binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.webp binary

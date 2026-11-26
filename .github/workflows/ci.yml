@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-check:
+    name: Build DLL and run checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install MinGW-w64 cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Compile ParryLoot.dll
+        run: |
+          mkdir -p build build/stage/mods/ParryLoot dist
+          x86_64-w64-mingw32-g++ -std=c++20 -O2 -s -Wall -Wextra -Werror \
+            -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0A00 -shared \
+            src/ParryLoot.cpp -o build/ParryLoot.dll \
+            -static -static-libgcc -static-libstdc++ -Wl,--exclude-all-symbols
+
+      - name: Stage zip and run checks
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          cp build/ParryLoot.dll build/stage/mods/ParryLoot.dll
+          cp assets/mods/ParryLoot.ini build/stage/mods/ParryLoot.ini
+          cp assets/mods/ParryLoot/README.txt build/stage/mods/ParryLoot/README.txt
+          cp LICENSE build/stage/mods/ParryLoot/LICENSE
+          (cd build/stage && zip -r "../../dist/ParryLoot-${VERSION}.zip" mods)
+          python tools/smoke_check.py
+          python tools/nexus_page.py check
+          python tools/release_notes.py "$VERSION"
+
+      - name: Upload built release zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: ParryLoot-ci-build
+          path: dist/ParryLoot-*.zip

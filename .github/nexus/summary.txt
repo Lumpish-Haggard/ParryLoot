@@ -1,0 +1,1 @@
+Grants a short Item Discovery boost (+25 for 15s) after landing a melee or spell parry, with ERBuffTimer support. Standalone ModEngine 2 DLL: touches zero regulation.bin files and needs no talisman.

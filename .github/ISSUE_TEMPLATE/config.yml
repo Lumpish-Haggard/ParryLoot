@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: ModEngine 2 issues
+    url: https://github.com/soulsmods/ModEngine2/issues
+    about: Crashes or DLL loading failures across all mods belong to ModEngine 2's issue tracker.

@@ -1,0 +1,52 @@
+name: Bug report
+description: Something in Parry Loot does not work (hook failed, buff not applying, crash, timer missing).
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you parried, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Equip Buckler / Carian Retaliation / Golden Parry
+        2. Parry a knight melee swing
+        3. Check status screen Discovery / ERBuffTimer icon
+    validations:
+      required: true
+
+  - type: input
+    id: mod-version
+    attributes:
+      label: Parry Loot version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: game-version
+    attributes:
+      label: Elden Ring App Version
+      placeholder: "1.17.2"
+    validations:
+      required: true
+
+  - type: input
+    id: loader
+    attributes:
+      label: Mod loader & relevant mods
+      placeholder: "ModEngine 2.1.0, ERBuffTimer 1.2.4"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs & ParryLoot.ini
+      description: Paste `mods\ParryLoot.log` and your `mods\ParryLoot.ini` (plus relevant lines from `modengine2\logs\`).
+      render: text

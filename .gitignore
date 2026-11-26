@@ -1,0 +1,29 @@
+# Compiled binaries & build artifacts (CI builds cleanly from src/; releases ship via dist/*.zip)
+build/
+dist/
+*.dll
+*.o
+*.obj
+*.exp
+*.lib
+*.pdb
+
+# Local Nexus Mods checklist & upload notes (published page text is tracked in .github/nexus/)
+/nexus/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log

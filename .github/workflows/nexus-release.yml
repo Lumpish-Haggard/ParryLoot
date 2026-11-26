@@ -1,0 +1,321 @@
+name: Release to Nexus Mods
+
+# Publishes a release on Nexus Mods:
+#  1. the zip attached to the GitHub release, as a new version of the mod's main
+#     file, with that version's CHANGELOG.md section;
+#  2. the mod page text in .github/nexus/ (description and summary), when it
+#     changed since the previous release.
+#
+# It never builds anything: the zip that goes out must be the one that was tested in
+# game (built with .\pack.ps1). Attach that zip to the GitHub release; this workflow
+# only checks it (tools/smoke_check.py) and passes it on.
+#
+# Setup (once):
+#  * the repository secret NEXUSMODS_API_KEY, a personal API key from
+#    https://www.nexusmods.com/settings/api-keys (Settings > Secrets and variables > Actions);
+#  * NEXUS_MOD_ID and NEXUS_FILE_ID below. Nexus can only add versions to a file that
+#    exists, so create the mod page and upload its main file by hand with 1.0.0, then copy
+#    both IDs from the mod's Files tab with "Advanced" switched on (under the "API"
+#    heading). While they are empty, every run only checks and sends nothing.
+#
+# Runs on its own when a release is published (not for pre-releases). From the
+# Actions tab it can also be run by hand:
+#   dry run    check everything, send nothing (the default)
+#   upload     what a published release does
+#   page only  update the mod page text only; the ref may be a branch such as main
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Release tag, for example v1.0.0 (for 'page only' a branch such as main also works)"
+        required: true
+      mode:
+        description: "What to do"
+        type: choice
+        options: ["dry run", "upload", "page only"]
+        default: "dry run"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nexus-release
+  cancel-in-progress: false
+
+env:
+  NEXUS_API: "https://api.nexusmods.com/v3"
+  # From the mod's Files tab with "Advanced" switched on (under the "API" heading).
+  # Empty until the first version was uploaded by hand: until then nothing is sent.
+  NEXUS_MOD_ID: ""    # Unique Mod ID
+  NEXUS_FILE_ID: ""   # File ID of the main file
+  # Nexus allows only letters, digits, spaces and _ ' ( ) . - in a file name, at most 50 characters.
+  NEXUS_DISPLAY_NAME: "Parry Loot"
+  # At most 255 characters (enforced by Nexus from 2026-11-23).
+  NEXUS_FILE_DESCRIPTION: "Standalone ModEngine 2 DLL (+25 Item Discovery for 15s on successful parry, ERBuffTimer compatible, zero regulation.bin edits)."
+  PAGE_DIR: ".github/nexus"
+
+jobs:
+  release:
+    name: Publish on Nexus Mods
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - name: Work out what to do
+        id: plan
+        env:
+          REF: ${{ github.event.release.tag_name || inputs.ref }}
+          MODE: ${{ github.event_name == 'release' && 'upload' || inputs.mode }}
+        run: |
+          is_tag=false
+          if [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then is_tag=true; fi
+          case "$MODE" in
+            "upload")    file=$is_tag; page=auto;  dry=false ;;
+            "page only") file=false;   page=force; dry=false ;;
+            "dry run")   file=$is_tag; page=auto;  dry=true ;;
+            *) echo "::error::Unknown mode '$MODE'"; exit 1 ;;
+          esac
+          if [ "$MODE" = "upload" ] && [ "$is_tag" != "true" ]; then
+            echo "::error::'$REF' is not a release tag like v1.0.0"
+            exit 1
+          fi
+          configured=true
+          if [ -z "$NEXUS_MOD_ID" ] || [ -z "$NEXUS_FILE_ID" ]; then
+            configured=false
+            dry=true
+            echo "::warning::NEXUS_MOD_ID and NEXUS_FILE_ID are not set yet, so nothing is sent. Upload the first version to Nexus by hand, then set both in .github/workflows/nexus-release.yml."
+          fi
+          {
+            echo "ref=$REF"
+            echo "version=${REF#v}"
+            echo "file=$file"
+            echo "page=$page"
+            echo "dry=$dry"
+            echo "configured=$configured"
+          } >> "$GITHUB_OUTPUT"
+          echo "ref=$REF mode=$MODE -> file=$file page=$page dry=$dry configured=$configured"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.plan.outputs.ref }}
+          fetch-depth: 0   # the previous release tag is needed to see whether the page text changed
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # ------------------------------------------------------------------ checks
+
+      - name: Check that the tagged source is this version
+        if: steps.plan.outputs.file == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          [ "$(tr -d '[:space:]' < VERSION)" = "$VERSION" ] || {
+            echo "::error::VERSION at this tag is not $VERSION"
+            exit 1
+          }
+
+      - name: Download and check the zip attached to the release
+        id: zip
+        if: steps.plan.outputs.file == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.ref }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          file="ParryLoot-$VERSION.zip"
+          mkdir -p dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$file" --dir dist || {
+            echo "::error::Release $TAG has no asset named $file. Attach the zip you tested in game."
+            exit 1
+          }
+          unzip -Z1 "dist/$file"
+          # Checks the version, changelog, page text and INI at this tag, and the zip itself:
+          # exactly the four files, '/' in every name, an x64 DLL without runtime DLL imports.
+          python tools/smoke_check.py
+          ls -l "dist/$file"
+          sha256sum "dist/$file"
+          echo "file=dist/$file" >> "$GITHUB_OUTPUT"
+
+      - name: Changelog for this version
+        id: notes
+        if: steps.plan.outputs.file == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          python tools/release_notes.py "$VERSION" --plain > notes.txt
+          cat notes.txt
+          {
+            echo "text<<NOTES_END_OF_TEXT"
+            cat notes.txt
+            echo "NOTES_END_OF_TEXT"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check the mod page text
+        id: page
+        if: steps.plan.outputs.page != 'false'
+        env:
+          PAGE: ${{ steps.plan.outputs.page }}
+        run: |
+          python tools/nexus_page.py check
+          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "HEAD^" 2>/dev/null || true)
+          # state of one file since the previous release: new | changed | same (or norelease)
+          state() {
+            if [ -z "$prev" ]; then echo norelease
+            elif ! git cat-file -e "$prev:$1" 2>/dev/null; then echo new
+            elif git diff --quiet "$prev" HEAD -- "$1"; then echo same
+            else echo changed; fi
+          }
+          d=$(state "$PAGE_DIR/description.bbcode")
+          s=$(state "$PAGE_DIR/summary.txt")
+          if [ "$PAGE" = "force" ]; then
+            desc=true; summ=true; why="requested by hand"
+          else
+            # The description is backed up before it is replaced, so it is sent whenever it is new
+            # or changed. The live summary cannot be read back, so it is only sent when it changed
+            # after it was first tracked (or by hand), never overwritten blind.
+            desc=false; summ=false
+            case "$d" in new|changed|norelease) desc=true ;; esac
+            [ "$s" = "changed" ] && summ=true
+            why="since ${prev:-the first release}: description $d, summary $s"
+          fi
+          send=false
+          if [ "$desc" = "true" ] || [ "$summ" = "true" ]; then send=true; fi
+          echo "Send description: $desc, summary: $summ ($why)"
+          {
+            echo "send=$send"
+            echo "desc=$desc"
+            echo "summ=$summ"
+            echo "why=$why"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check that the API key is set
+        if: steps.plan.outputs.dry != 'true'
+        env:
+          KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::Add the repository secret NEXUSMODS_API_KEY first (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+
+      # ------------------------------------------------------------------ the file
+
+      - name: Upload the file to Nexus Mods
+        id: nexus
+        if: steps.plan.outputs.file == 'true' && steps.plan.outputs.dry != 'true'
+        uses: Nexus-Mods/upload-action@98532f7670c27cbecc78fae03fa3e278147827e2 # v1.0.0-beta.11
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          mod_id: ${{ env.NEXUS_MOD_ID }}
+          file_id: ${{ env.NEXUS_FILE_ID }}
+          filename: ${{ steps.zip.outputs.file }}
+          version: ${{ steps.plan.outputs.version }}
+          display_name: ${{ env.NEXUS_DISPLAY_NAME }}
+          description: ${{ env.NEXUS_FILE_DESCRIPTION }}
+          category: main
+          update_mod_version: true
+          archive_existing_version: false
+          changelog: ${{ steps.notes.outputs.text }}
+
+      # ------------------------------------------------------------------ the page
+
+      - name: Save the page text that is live now
+        id: before
+        if: steps.page.outputs.send == 'true' && steps.plan.outputs.configured == 'true'
+        env:
+          KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "No API key, so the live page cannot be read (dry run)."
+            exit 0
+          fi
+          code=$(curl -sS -o live.json -w '%{http_code}' \
+            -H "apikey: $KEY" -H "Accept: application/json" -H "User-Agent: ParryLoot-release" \
+            "$NEXUS_API/mods/$NEXUS_MOD_ID")
+          if [ "$code" != "200" ]; then
+            echo "::error::Reading the mod page failed (HTTP $code); the page was not changed."
+            head -c 1000 live.json; echo
+            exit 1
+          fi
+          same=false
+          python tools/nexus_page.py decode live.json before && same=true || [ $? -eq 3 ]
+          diff -u before/description.bbcode "$PAGE_DIR/description.bbcode" || true
+          echo "same=$same" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the old page text as an artifact
+        if: steps.page.outputs.send == 'true' && hashFiles('before/description.raw.bbcode') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: nexus-page-before
+          path: before/
+          retention-days: 90
+
+      - name: Update the mod page
+        id: pageupdate
+        if: steps.page.outputs.send == 'true' && steps.plan.outputs.dry != 'true'
+        env:
+          KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+          SEND_DESC: ${{ steps.page.outputs.desc }}
+          SEND_SUMM: ${{ steps.page.outputs.summ }}
+          DESC_SAME: ${{ steps.before.outputs.same }}
+        run: |
+          args=()
+          if [ "$SEND_DESC" = "true" ] && [ "$DESC_SAME" != "true" ]; then args+=(--description); fi
+          if [ "$SEND_SUMM" = "true" ]; then args+=(--summary); fi
+          if [ ${#args[@]} -eq 0 ]; then
+            echo "The live page already matches; nothing to send."
+            echo "result=already up to date" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python tools/nexus_page.py body page.json "${args[@]}"
+          code=$(curl -sS -o response.txt -w '%{http_code}' -X PATCH \
+            -H "apikey: $KEY" -H "Content-Type: application/json" -H "Accept: application/json" \
+            -H "User-Agent: ParryLoot-release" \
+            --data-binary @page.json "$NEXUS_API/mods/$NEXUS_MOD_ID")
+          echo "HTTP $code"
+          if [ "$code" != "204" ] && [ "$code" != "200" ]; then
+            echo "::error::Updating the mod page failed (HTTP $code). The file upload above is not affected."
+            head -c 2000 response.txt; echo
+            exit 1
+          fi
+          echo "result=updated (${args[*]})" >> "$GITHUB_OUTPUT"
+
+      - name: Read the page back
+        if: steps.pageupdate.outputs.result != '' && steps.pageupdate.outputs.result != 'already up to date'
+        env:
+          KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+        run: |
+          curl -sS -o after.json -H "apikey: $KEY" -H "Accept: application/json" \
+            -H "User-Agent: ParryLoot-release" "$NEXUS_API/mods/$NEXUS_MOD_ID"
+          if ! python tools/nexus_page.py decode after.json after; then
+            echo "::warning::Nexus stored the description differently from what was sent. Check the page; the differences are below."
+            diff -u after/description.bbcode "$PAGE_DIR/description.bbcode" || true
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          REF: ${{ steps.plan.outputs.ref }}
+          DRY: ${{ steps.plan.outputs.dry }}
+          CONFIGURED: ${{ steps.plan.outputs.configured }}
+          FILE: ${{ steps.zip.outputs.file }}
+          VERSION_ID: ${{ steps.nexus.outputs.version_id }}
+          PAGE_SEND: ${{ steps.page.outputs.send }}
+          PAGE_WHY: ${{ steps.page.outputs.why }}
+          PAGE_RESULT: ${{ steps.pageupdate.outputs.result }}
+        run: |
+          {
+            echo "### Nexus Mods"
+            echo "- Ref: ${REF:-?}"
+            [ "$CONFIGURED" = "false" ] && echo "- NEXUS_MOD_ID and NEXUS_FILE_ID are not set yet: checked only. Upload this version by hand, then set them."
+            [ "$DRY" = "true" ] && echo "- Dry run: nothing was sent."
+            if [ -n "$VERSION_ID" ]; then echo "- File uploaded: ${FILE} (Nexus file version id $VERSION_ID)"
+            elif [ -n "$FILE" ]; then echo "- File checked, not uploaded: ${FILE}"; fi
+            if [ -n "$PAGE_RESULT" ]; then echo "- Page: $PAGE_RESULT ($PAGE_WHY). The text that was live before is in the nexus-page-before artifact."
+            elif [ "$PAGE_SEND" = "true" ]; then echo "- Page: would be updated ($PAGE_WHY), but was not."
+            elif [ -n "$PAGE_WHY" ]; then echo "- Page: left alone ($PAGE_WHY)."; fi
+          } >> "$GITHUB_STEP_SUMMARY"

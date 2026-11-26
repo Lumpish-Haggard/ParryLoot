@@ -12,10 +12,10 @@ Installation (ModEngine 2, offline / EAC off):
    (keep any DLLs already in the list, separated by commas).
 3. Start the game with ModEngine 2. mods\ParryLoot.log shows what the mod did.
    No log when the game starts means ModEngine 2 did not load the DLL (see step 2).
-With Vortex, install the zip through Vortex instead, then still check step 2:
-Vortex writes that list only when it saves its Load Order tab, which installing
-this DLL-only mod does not change. Drag any entry on that tab one place down and
-back, or add the line by hand (Vortex keeps it from then on).
+With Vortex, install the zip through Vortex instead: Parry Loot then shows up on
+Vortex's Load Order tab, and Vortex writes the line of step 2 itself when it
+deploys. If the line is still missing, drag any entry on that tab one place down
+and back, or add the line by hand (Vortex keeps it from then on).
 
 To uninstall: remove "mods\\ParryLoot.dll" from external_dlls, then delete
 mods\ParryLoot.dll, mods\ParryLoot.ini, mods\ParryLoot.log and mods\ParryLoot\.

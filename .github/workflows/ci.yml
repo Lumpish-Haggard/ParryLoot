@@ -36,8 +36,8 @@ jobs:
           VERSION=$(tr -d '[:space:]' < VERSION)
           cp build/ParryLoot.dll build/stage/mods/ParryLoot.dll
           cp assets/mods/ParryLoot.ini build/stage/mods/ParryLoot.ini
-          cp assets/mods/ParryLoot/README.txt build/stage/mods/ParryLoot/README.txt
-          cp LICENSE build/stage/mods/ParryLoot/LICENSE
+          cp assets/mods/ParryLoot/ParryLoot-README.txt build/stage/mods/ParryLoot/ParryLoot-README.txt
+          cp LICENSE build/stage/mods/ParryLoot/LICENSE.txt
           (cd build/stage && zip -r "../../dist/ParryLoot-${VERSION}.zip" mods)
           python tools/smoke_check.py
           python tools/nexus_page.py check

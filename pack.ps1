@@ -8,7 +8,7 @@
        with x86_64-w64-mingw32-g++ / g++ or cl.exe into build\ParryLoot.dll. Without -Build
        it stops if src\ParryLoot.cpp is newer than build\ParryLoot.dll.
     3. Stages ONLY runtime mod files (mods\ParryLoot.dll, mods\ParryLoot.ini,
-       mods\ParryLoot\README.txt, mods\ParryLoot\LICENSE) into build\stage.
+       mods\ParryLoot\ParryLoot-README.txt, mods\ParryLoot\LICENSE.txt) into build\stage.
     4. Creates dist\ParryLoot-<version>.zip and dist\info.json.
     5. Runs tools\smoke_check.py if Python is available.
     6. With -Install, copies the staged mods\ folder into -GamePath (or ELDEN_RING_GAME): your
@@ -95,8 +95,12 @@ New-Item -ItemType Directory -Force $StageDoc | Out-Null
 
 Copy-Item -Force $DllOut (Join-Path $StageMods "ParryLoot.dll")
 Copy-Item -Force (Join-Path $Root "assets\mods\ParryLoot.ini") (Join-Path $StageMods "ParryLoot.ini")
-Copy-Item -Force (Join-Path $Root "assets\mods\ParryLoot\README.txt") (Join-Path $StageDoc "README.txt")
-Copy-Item -Force (Join-Path $Root "LICENSE") (Join-Path $StageDoc "LICENSE")
+# These two names matter for Vortex. Its Elden Ring support drops files without an extension and
+# files named like one in ModEngine 2's own package (README.txt), and a mod left with only a DLL
+# and an INI gets no entry on Vortex's Load Order tab, so Vortex never writes it into
+# config_eldenring.toml. Kept files give the mod an entry, and the next deploy writes the line.
+Copy-Item -Force (Join-Path $Root "assets\mods\ParryLoot\ParryLoot-README.txt") (Join-Path $StageDoc "ParryLoot-README.txt")
+Copy-Item -Force (Join-Path $Root "LICENSE") (Join-Path $StageDoc "LICENSE.txt")
 
 if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
 # Not Compress-Archive: in Windows PowerShell 5.1 it writes entry names with backslashes
@@ -115,7 +119,7 @@ try {
     $Archive.Dispose()
 }
 
-$Expected = @("mods/ParryLoot.dll", "mods/ParryLoot.ini", "mods/ParryLoot/LICENSE", "mods/ParryLoot/README.txt")
+$Expected = @("mods/ParryLoot.dll", "mods/ParryLoot.ini", "mods/ParryLoot/LICENSE.txt", "mods/ParryLoot/ParryLoot-README.txt")
 $Check = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
 try {
     $Names = @($Check.Entries | ForEach-Object { $_.FullName })
@@ -162,6 +166,6 @@ if ($Install) {
     if (-not (Test-Path (Join-Path $TargetMods "ParryLoot.ini"))) {
         Copy-Item -Force (Join-Path $StageMods "ParryLoot.ini") (Join-Path $TargetMods "ParryLoot.ini")
     }
-    Copy-Item -Force (Join-Path $StageDoc "README.txt") (Join-Path $TargetMods "ParryLoot\README.txt")
+    Copy-Item -Force (Join-Path $StageDoc "ParryLoot-README.txt") (Join-Path $TargetMods "ParryLoot\ParryLoot-README.txt")
     Write-Host "Installed to $TargetMods" -ForegroundColor Green
 }

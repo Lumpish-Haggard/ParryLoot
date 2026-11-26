@@ -130,8 +130,10 @@ def main() -> int:
         expected = {
             "mods/ParryLoot.dll",
             "mods/ParryLoot.ini",
-            "mods/ParryLoot/README.txt",
-            "mods/ParryLoot/LICENSE",
+            # Named so that Vortex keeps them (see pack.ps1): no README.txt, no LICENSE without
+            # an extension.
+            "mods/ParryLoot/ParryLoot-README.txt",
+            "mods/ParryLoot/LICENSE.txt",
         }
         with zipfile.ZipFile(zip_path) as zf:
             # orig_filename is the name as stored: on Windows, ZipInfo.filename turns

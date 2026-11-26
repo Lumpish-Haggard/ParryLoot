@@ -72,7 +72,7 @@ How Elden Ring calculates Item Discovery (verified directly in `eldenring.exe` `
    ]
    ```
 
-   **With Vortex, check this too.** Vortex writes that list itself, but only when it saves its *Load Order* tab, and installing a DLL-only mod like this one does not change that tab. To have Vortex write it, drag any entry on the Load Order tab one place down and back, or add the line by hand (Vortex keeps it from then on).
+   **With Vortex, check this too.** Vortex writes that list itself, but only when its *Load Order* tab changes. From 1.0.1 on, Parry Loot adds an entry there, so the deploy after installing it writes the line. If the line is still missing, drag any entry on the Load Order tab one place down and back, or add the line by hand (Vortex keeps it from then on).
 
 4. Launch the game through ModEngine 2 (**offline / non-EAC only**, as with any DLL mod). The mod writes `mods\ParryLoot.log` next to `ParryLoot.dll` each time the game starts.
 

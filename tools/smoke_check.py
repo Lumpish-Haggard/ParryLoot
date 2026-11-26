@@ -113,7 +113,7 @@ def main() -> int:
     ini_path = os.path.join(ROOT, "assets", "mods", "ParryLoot.ini")
     with open(ini_path, encoding="utf-8") as f:
         ini_text = f.read()
-    for key in ("enabled", "duration", "item_discovery_bonus", "melee_parry", "spell_parry", "sp_effect_id", "log"):
+    for key in ("enabled", "duration", "item_discovery_bonus", "sp_effect_id", "log"):
         if not re.search(rf"(?m)^{key}\s*=", ini_text):
             fail(f"ParryLoot.ini missing key '{key}'")
 

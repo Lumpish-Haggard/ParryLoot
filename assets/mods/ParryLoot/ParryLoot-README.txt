@@ -1,8 +1,10 @@
 Parry Loot (Standalone ModEngine 2 DLL mod)
 ===========================================
-Grants a short Item Discovery boost after landing a successful parry so the buff
-stays active through your riposte kill and displays a native countdown timer
-in ERBuffTimer. It touches no regulation.bin file and needs no talisman.
+Grants a short Item Discovery boost after a successful parry (your parry catches
+an enemy's attack and staggers it), so the buff stays active through your riposte
+kill and displays a native countdown timer in ERBuffTimer. Blocks, mistimed
+parries and parries at nothing give nothing. It touches no regulation.bin file
+and needs no talisman.
 
 Installation (ModEngine 2, offline / EAC off):
 1. Put the mods folder next to modengine2_launcher.exe and config_eldenring.toml
@@ -24,9 +26,6 @@ Configuration (mods\ParryLoot.ini):
 - enabled = true               Enable/disable the mod
 - duration = 15.0              Seconds the buff lasts (0.5 - 170.0)
 - item_discovery_bonus = 25    Item Discovery added (+25 vanilla-friendly; 50 = Silver Fowl Foot)
-- melee_parry = true           Trigger on melee weapon/shield parries (including Golden Parry)
-- spell_parry = false          Projectile/spell parries (Carian Retaliation / Thops's Barrier). Off by
-                               default: its trigger also fires when a parry hits nothing.
 - sp_effect_id = 3970          SpEffect used (3970 = Silver-Pickled Fowl Foot icon; keep it:
                                the bonus is set relative to that effect's own +50)
 - log = true                   Write mods\ParryLoot.log

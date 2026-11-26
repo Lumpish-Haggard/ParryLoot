@@ -42,10 +42,10 @@ python tools/nexus_page.py check
 
 `.\pack.ps1 -Build -Install -GamePath "<your ModEngine 2 folder>"` builds the DLL and copies it next to `modengine2_launcher.exe` (it never overwrites an existing `ParryLoot.ini`). If Vortex manages your ModEngine 2, install `dist\ParryLoot-<version>.zip` through Vortex instead (drag it onto the Mods page, enable, deploy) and check that `config_eldenring.toml` lists `"mods\\ParryLoot.dll"`. Vortex rewrites that file only when its load order changes, with the DLL mods it installed from an archive: a copied DLL is dropped. The zip's `ParryLoot-README.txt` and `LICENSE.txt` give the mod a Load Order entry (Vortex drops `README.txt`, which ModEngine 2's package also has, and files without an extension), so the deploy after installing it writes the line. With ERBuffTimer loaded you can watch the buff's timer. Check, and keep `mods\ParryLoot.log` from the session:
 
-1. **Melee parry** (a shield's Parry, Buckler Parry or Golden Parry): one `applied ... for 15.0s` line, the timer counts down from 15, the status screen's Discovery is 25 higher while it runs, and it is gone after 15 s.
+1. **A parry that catches an attack** (the enemy staggers and could be riposted): one `Parry -> applied ... for 15.0s` line, the timer counts down from 15, the status screen's Discovery is 25 higher while it runs, and it is gone after 15 s.
 2. **A second parry within 15 s** refreshes it (another `applied` line, not `already runs longer`).
-3. **Spell parry** (only with `spell_parry = true`, off by default; Carian Retaliation or Thops's Barrier against a sorcery): one `applied (spell)` line. Known problem: this trigger also fires twice for a parry that hits nothing, which is why it is off by default.
-4. **Nothing else triggers it:** whiffed parries, blocks, Guard Counters, rolls, your own spells, getting hit. Any `Parry (...)` line you did not cause is a bug. With `spell_parry = false` the log says `spell_parry is off` at start and never shows `Parry (spell)`.
+3. **Other parry skills** (Buckler Parry, Golden Parry, Storm Wall, Carian Retaliation, and Carian Retaliation or Thops's Barrier against a sorcery): note which ones give an `applied` line. Only a shield's Parry has been tested so far.
+4. **Nothing else triggers it:** blocks, a mistimed parry that lands on your guard, a parry at nothing, Guard Counters, ripostes, rolls, your own spells, getting hit. Any `Parry` line you did not cause is a bug.
 5. **A real Silver-Pickled Fowl Foot**: eaten before a parry, it keeps its 180 s and +50; eaten during the 15 s buff, it gives the full 180 s and +50.
 6. A `WARNING` line in the log is a bug: report it with the log.
 

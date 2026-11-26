@@ -26,12 +26,11 @@ Pulling off a clean parry in Elden Ring feels great, and when it sets up a letha
 
 - **Pure DLL hook, zero `regulation.bin` edits:** Safe to combine with any parameter mod (Reforged, Convergence, Randomizer, custom merges, etc.) and completely save-safe to add or remove anytime.
 - **No talisman required:** Works regardless of what talismans, weapons, or shields you equip.
-- **Melee parries:** Parry (on shields, daggers such as the Parrying Dagger, curved swords and other weapons, or as an Ash of War), Buckler Parry, Golden Parry, Storm Wall, and Carian Retaliation (melee).
-- **Spell / projectile parries: off by default.** `spell_parry` in `ParryLoot.ini` turns on a trigger for Carian Retaliation and Thops's Barrier deflecting a spell or projectile, but the game event it listens to also fires when a parry skill hits nothing, so with it on, a parry at the air counts too.
-- **Zero false positives (with the defaults):** Ignores normal shield blocks, Guard Counters, i-frame rolls, whiffed parries, partial guard-breaks, and enemies parrying you.
+- **Real parries only:** The buff comes when your parry catches an enemy's attack and staggers it, the moment that opens a riposte. The mod takes that from the game itself: a parry that catches an attack makes its own hit on the attacker, and that hit is what the mod waits for. Tested with a shield's Parry; the other parry skills (Buckler Parry, Golden Parry, Storm Wall, Carian Retaliation) have not each been tried yet, and neither has parrying a spell or projectile.
+- **No false positives:** Blocks, mistimed parries that land on your guard, parries at nothing, Guard Counters, ripostes, rolls, and an enemy parrying you give nothing.
 - **Native `ERBuffTimer` countdown icon:** Stamps finite remaining/total duration onto the applied `SpEffect` (`3970`), so `ERBuffTimer` shows the Silver-Pickled Fowl Foot icon ticking down (`15` → `0`).
 - **Respects Silver-Pickled Fowl Foot consumables:** Never shortens or weakens a real `180s` (`+50`) Silver-Pickled Fowl Foot if one is already active, or if you consume one during a parry buff.
-- **Configurable via `ParryLoot.ini`:** Tune the bonus (`+25`, `+50`, etc.), duration, triggers, or logging without recompiling.
+- **Configurable via `ParryLoot.ini`:** Tune the bonus (`+25`, `+50`, etc.), duration, or logging without recompiling.
 - **Tiny & self-contained:** Compiled C++20 DLL (~74 KB) with zero external runtime dependencies (only `KERNEL32.dll` and `msvcrt.dll`), resolved at runtime via unique `.text` AOB signatures.
 
 ## Stacking & Arcane Limit Behaviour
@@ -93,13 +92,6 @@ duration = 15.0
 ; Default: 25 (vanilla-friendly, half a Silver-Pickled Fowl Foot; 50 matches a full foot)
 item_discovery_bonus = 25
 
-; Triggers
-melee_parry = true
-; Spell / projectile parries (Carian Retaliation, Thops's Barrier). Off by default:
-; the game event it listens to also fires when a parry skill hits nothing, so with
-; it on, a parry at the air gives the buff too.
-spell_parry = false
-
 ; Vanilla SpEffect ID used for the icon and ERBuffTimer countdown (3970 = Silver-Pickled Fowl Foot).
 ; Leave it at 3970: item_discovery_bonus is set relative to that effect's own +50.
 sp_effect_id = 3970
@@ -137,7 +129,7 @@ Editing `regulation.bin` modifies game parameter files and clashes with overhaul
 When you parry an enemy, they rarely die from the parry itself: you perform a riposte first, and loot drops roll when the enemy dies. Fifteen seconds gives plenty of time for the riposte animation to finish and score the kill, while `+25` keeps drops vanilla-friendly (half a Silver-Pickled Fowl Foot's `+50`). Both are configurable in `mods\ParryLoot.ini`.
 
 **Which parries trigger it, and can blocks, rolls, Guard Counters, or enemies parrying me trigger it?**
-Melee parries (Parry on any shield or weapon that has it, Buckler Parry, Golden Parry, Storm Wall, Carian Retaliation melee) trigger it. Normal blocks, Guard Counters, i-frame rolls, whiffed parries, partial guard-breaks, and an enemy parrying you are ignored. Spell/projectile parries (Carian Retaliation, Thops's Barrier) count only with `spell_parry = true`, which is off by default because that trigger also fires for a parry that hits nothing.
+A parry that catches an enemy's attack and staggers it, so that you could riposte. Blocks, mistimed parries that land on your guard, parries at nothing, Guard Counters, ripostes, rolls, and an enemy parrying you are ignored. It is tested with a shield's Parry; the other parry skills and parrying a spell or projectile have not each been tried yet, so please report one that does not count.
 
 **Will `ERBuffTimer` show a timer icon on screen?**
 Yes. `ParryLoot` applies vanilla `SpEffect 3970` and stamps finite remaining/total duration (`15.0s`), so `ERBuffTimer` (`1.2.4+`) renders the Silver-Pickled Fowl Foot countdown icon natively without extra configuration.
@@ -151,8 +143,8 @@ Yes. Elden Ring's `GetItemDiscovery` clamps the Arcane stat scaling curve (`Calc
 **Does it stack with a Silver-Pickled Fowl Foot consumable?**
 No, by design. Both use vanilla `SpEffect 3970` so `ERBuffTimer` shows its icon without `regulation.bin` changes. If a real `180s` Silver-Pickled Fowl Foot (`+50`) is already active, `ParryLoot` leaves it untouched without shortening or weakening it; if you consume one while `ParryLoot`'s `15s` timer is active, `ParryLoot` steps aside immediately so you get the full `180s` at `+50`.
 
-**Can I customize the bonus or the triggers?**
-Yes. Edit `mods\ParryLoot.ini` to change `item_discovery_bonus` (e.g., `25` or `50`), `duration`, `melee_parry`, `spell_parry` (off by default, see above), `enabled`, or `log`.
+**Can I customize the bonus?**
+Yes. Edit `mods\ParryLoot.ini` to change `item_discovery_bonus` (e.g., `25` or `50`), `duration`, `enabled`, or `log`. (`melee_parry` and `spell_parry` from 1.0.0 are gone: the buff now comes from the parry itself.)
 
 **The status screen showed +50 Discovery during the buff, not +25. Why?**
 That was a bug in 1.0.0, fixed in 1.0.1. The buff is the Silver-Pickled Fowl Foot effect (`+50`), which the mod corrects to `item_discovery_bonus` inside the game's Item Discovery calculation. 1.0.0 corrected only the calculation made from your character's own effect list, but the status screen asks for it with another list the game keeps for the player, so it showed the full `+50`. 1.0.1 corrects every calculation that counts the effect.

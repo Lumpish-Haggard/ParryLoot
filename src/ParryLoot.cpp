@@ -16,11 +16,17 @@ constexpr char kVersion[] = "1.0.1";
 
 // Verified offsets for Elden Ring App Ver. 1.17.2 (exe 2.7.2.0)
 constexpr uintptr_t kWorldChrManMainPlayerOffset = 0x1E508;
-constexpr uintptr_t kChrInsHandleOffset = 0x08;
 constexpr uintptr_t kChrInsSpecialEffectOffset = 0x178;
 
-constexpr uintptr_t kDamageModuleChrInsOffset = 0x08;
-constexpr uintptr_t kAttackDataIsParriedOffset = 0x258;
+// A hit as the game hands it to the defender's damage module (see Hook_HitEntry): the module's
+// owner, and the attack's type. Type 0x40 is a parry. When an attack meets a parry, the game
+// cancels it and the parry "hits" the attacker instead, with type 0x40, no damage, and the
+// stagger that opens the riposte (seen in game: all 44 parries of a session were such hits from
+// the player, and no other hit had the type; the guard step in eldenring.exe skips type 0x40 the
+// same way). A block never produces one: it runs the guard step on the player instead.
+constexpr uintptr_t kDamageModuleOwnerOffset = 0x08;
+constexpr uintptr_t kAttackDataTypeOffset = 0x34;
+constexpr int32_t kAttackTypeParry = 0x40;
 
 constexpr uintptr_t kSpecialEffectHeadNodeOffset = 0x08;
 constexpr uintptr_t kSpEffectNodeEffectIdOffset = 0x08;
@@ -44,22 +50,18 @@ constexpr float kVanillaSilverFootBonus = 50.0f;
 
 struct Config {
     bool enabled = true;
-    bool meleeParry = true;
-    // Off by default: the hooked event also fires when a parry skill is used and hits nothing
-    // (twice per use, about 0.4 s apart; seen in game with 1.0.0), so it is not a parry check.
-    bool spellParry = false;
     bool logEnabled = true;
     int32_t spEffectId = kDefaultSpEffectId;
     float durationSeconds = 15.0f;
     float itemDiscoveryBonus = 25.0f;
 };
 
-using ResolveParryFn = float(__fastcall*)(void* chrDamageModule, void* attackerChrIns, void* attackData);
-using SpellParryCase2Fn = uint8_t(__fastcall*)(void* bulletSubObj, void* eventPayload);
+using HitEntryFn = void(__fastcall*)(void* chrDamageModule, void* attacker, void* attackData, uint64_t arg4);
 using CalcItemDropRateSumFn = float(__fastcall*)(void* csSpecialEffect);
 using ApplySpEffectFn = void(__fastcall*)(void* chrIns, int32_t spEffectId, uint8_t unk0);
 
 Config g_cfg{};
+bool g_obsoleteKeys = false;  // the INI still has melee_parry / spell_parry (logged at start)
 wchar_t g_modDir[MAX_PATH]{};
 FILE* g_logFile = nullptr;
 SRWLOCK g_logLock = SRWLOCK_INIT;
@@ -70,19 +72,15 @@ HANDLE g_initThread = nullptr;
 
 uintptr_t** g_pWorldChrMan = nullptr;
 ApplySpEffectFn g_applySpEffect = nullptr;
-ResolveParryFn g_origResolveParry = nullptr;
-SpellParryCase2Fn g_origSpellParry = nullptr;
+HitEntryFn g_origHitEntry = nullptr;
 CalcItemDropRateSumFn g_origCalcDropRate = nullptr;
 
 // Trampoline / call-relay page and patch bookkeeping for clean unhook.
 uint8_t* g_trampolinePage = nullptr;
-uintptr_t g_hookAddrResolveParry = 0;
-uint8_t g_origBytesResolveParry[16]{};
-bool g_patchedResolveParry = false;
-
-uintptr_t g_hookAddrSpellParry = 0;
-uint8_t g_origBytesSpellParry[15]{};
-bool g_patchedSpellParry = false;
+constexpr size_t kHitEntryStolenBytes = 17;  // up to and including mov [rsp+50h],r14
+uintptr_t g_hookAddrHitEntry = 0;
+uint8_t g_origBytesHitEntry[kHitEntryStolenBytes]{};
+bool g_patchedHitEntry = false;
 
 uintptr_t g_patchAddrDropRateCall = 0;
 int32_t g_origRel32DropRateCall = 0;
@@ -106,7 +104,6 @@ struct PendingStamp {
     uint32_t seq = 0;         // bumped for every apply, so a pass over an older one changes nothing
     bool active = false;
     ULONGLONG appliedAtMs = 0;
-    const char* source = "";  // "melee" or "spell"
     uintptr_t node = 0;       // the node this mod timed last, once known
     int stamps = 0;           // times this apply was timed
 };
@@ -242,10 +239,8 @@ void LoadConfig() {
 
         if (_stricmp(key, "enabled") == 0) {
             g_cfg.enabled = ParseBoolValue(val, g_cfg.enabled);
-        } else if (_stricmp(key, "melee_parry") == 0) {
-            g_cfg.meleeParry = ParseBoolValue(val, g_cfg.meleeParry);
-        } else if (_stricmp(key, "spell_parry") == 0) {
-            g_cfg.spellParry = ParseBoolValue(val, g_cfg.spellParry);
+        } else if (_stricmp(key, "melee_parry") == 0 || _stricmp(key, "spell_parry") == 0) {
+            g_obsoleteKeys = true;  // 1.0.0's two triggers, replaced by the parry itself
         } else if (_stricmp(key, "log") == 0) {
             g_cfg.logEnabled = ParseBoolValue(val, g_cfg.logEnabled);
         } else if (_stricmp(key, "sp_effect_id") == 0) {
@@ -539,29 +534,28 @@ bool HasLongerExternalSpEffect(uintptr_t spMod, int32_t effectId, float ourDurat
     return false;
 }
 
-void OnParrySucceeded(const char* source, uintptr_t mainPlayer) {
+void OnParrySucceeded(uintptr_t mainPlayer) {
     if (!g_cfg.enabled || !g_applySpEffect || !IsPlausiblePtr(mainPlayer)) {
         return;
     }
 
     const ULONGLONG nowMs = GetTickCount64();
     AcquireSRWLockExclusive(&g_stateLock);
-    // Debounce multi-hitbox / duplicate per-hit resolution within the same 60ms window.
+    // One parry can reach the hook more than once (an attack with several hitboxes).
     if (nowMs - g_lastParryTriggerMs < 60ULL) {
         ReleaseSRWLockExclusive(&g_stateLock);
         return;
     }
     g_lastParryTriggerMs = nowMs;
-    // Another hook firing for the same parry, while the effect applied a moment ago is not timed
-    // yet: it is this mod's own effect (its node may not even be in the list yet), so leave it
-    // to StampThread.
+    // A parry while the effect applied a moment ago is not timed yet: it is this mod's own
+    // effect (its node may not even be in the list yet), so leave it to StampThread.
     const bool stillTiming = g_pending.active && g_pending.stamps == 0;
     const ULONGLONG sinceApplyMs = nowMs - g_pending.appliedAtMs;
     const uintptr_t prevManaged = g_managedNodeAddr;
     ReleaseSRWLockExclusive(&g_stateLock);
     if (stillTiming) {
-        LogLine("Parry (%s): the effect applied %llums ago is still being timed; not applied again.",
-                source, static_cast<unsigned long long>(sinceApplyMs));
+        LogLine("Parry: the effect applied %llums ago is still being timed; not applied again.",
+                static_cast<unsigned long long>(sinceApplyMs));
         return;
     }
 
@@ -573,8 +567,8 @@ void OnParrySucceeded(const char* source, uintptr_t mainPlayer) {
     // Never shorten or overwrite a stronger/longer active Silver-Pickled Fowl Foot (180s).
     EffectNodeInfo longer{};
     if (HasLongerExternalSpEffect(spMod, g_cfg.spEffectId, g_cfg.durationSeconds, prevManaged, longer)) {
-        LogLine("Parry (%s): SpEffect %d already runs longer (node 0x%llX%s, %.1fs left of %.1fs, flags 0x%08X); left as it is.",
-                source, g_cfg.spEffectId, static_cast<unsigned long long>(longer.node),
+        LogLine("Parry: SpEffect %d already runs longer (node 0x%llX%s, %.1fs left of %.1fs, flags 0x%08X); left as it is.",
+                g_cfg.spEffectId, static_cast<unsigned long long>(longer.node),
                 longer.node == prevManaged ? ", timed by this mod" : "", longer.remaining, longer.total,
                 longer.flags);
         return;
@@ -588,7 +582,6 @@ void OnParrySucceeded(const char* source, uintptr_t mainPlayer) {
     ++g_pending.seq;
     g_pending.active = true;
     g_pending.appliedAtMs = GetTickCount64();
-    g_pending.source = source;
     g_pending.node = prevManaged;  // a refresh of the node timed last can land late too
     g_pending.stamps = 0;
     ReleaseSRWLockExclusive(&g_stateLock);
@@ -669,14 +662,14 @@ void ServicePendingStamp() {
         ReleaseSRWLockExclusive(&g_stateLock);
 
         if (stamps == 1) {
-            LogLine("Parry (%s) -> applied SpEffect %d for %.1fs (+%.0f Item Discovery) [node 0x%llX, flags 0x%08X, "
+            LogLine("Parry -> applied SpEffect %d for %.1fs (+%.0f Item Discovery) [node 0x%llX, flags 0x%08X, "
                     "timed %llums after the apply].",
-                    p.source, g_cfg.spEffectId, duration, g_cfg.itemDiscoveryBonus,
+                    g_cfg.spEffectId, duration, g_cfg.itemDiscoveryBonus,
                     static_cast<unsigned long long>(found), foundFlags,
                     static_cast<unsigned long long>(elapsedMs));
         } else if (stamps > 1) {
-            LogLine("Parry (%s): the game put SpEffect %d back to %.1fs of %.1fs; timed it again to %.1fs.",
-                    p.source, g_cfg.spEffectId, foundRem, foundTotal, remaining);
+            LogLine("Parry: the game put SpEffect %d back to %.1fs of %.1fs; timed it again to %.1fs.",
+                    g_cfg.spEffectId, foundRem, foundTotal, remaining);
         }
     }
 
@@ -689,9 +682,9 @@ void ServicePendingStamp() {
         }
         ReleaseSRWLockExclusive(&g_stateLock);
         if (missed) {
-            LogLine("WARNING: Parry (%s): SpEffect %d did not show up in the effect list within %llums, so its own "
+            LogLine("WARNING: Parry: SpEffect %d did not show up in the effect list within %llums, so its own "
                     "duration and Item Discovery apply this time.",
-                    p.source, g_cfg.spEffectId, static_cast<unsigned long long>(kStampWindowMs));
+                    g_cfg.spEffectId, static_cast<unsigned long long>(kStampWindowMs));
         }
     }
 }
@@ -711,47 +704,29 @@ DWORD WINAPI StampThread(LPVOID) {
     }
 }
 
-float __fastcall Hook_ResolveParryStamina(void* chrDamageModule, void* attackerChrIns, void* attackData) {
-    const uintptr_t dmgMod = reinterpret_cast<uintptr_t>(chrDamageModule);
-    const uintptr_t atk = reinterpret_cast<uintptr_t>(attackData);
-    const uintptr_t mainPlayer = GetMainPlayer();
-    const uintptr_t defender = IsPlausiblePtr(dmgMod)
-        ? *reinterpret_cast<uintptr_t*>(dmgMod + kDamageModuleChrInsOffset)
-        : 0;
-
-    uint8_t isParriedPre = IsPlausiblePtr(atk)
-        ? *reinterpret_cast<uint8_t*>(atk + kAttackDataIsParriedOffset)
-        : 0;
-
-    float result = g_origResolveParry(chrDamageModule, attackerChrIns, attackData);
-
-    if (g_cfg.enabled && g_cfg.meleeParry && mainPlayer != 0 && defender == mainPlayer) {
-        const uintptr_t attacker = reinterpret_cast<uintptr_t>(attackerChrIns);
-        if (attacker != 0 && attacker != mainPlayer && isParriedPre != 0 && IsPlausiblePtr(atk)) {
-            const uint8_t isParriedPost = *reinterpret_cast<uint8_t*>(atk + kAttackDataIsParriedOffset);
-            if (isParriedPost != 0) {
-                OnParrySucceeded("melee", mainPlayer);
-            }
-        }
+// The hit is the player's parry landing on another character: the player is the attacker, the
+// damage module belongs to someone else, and the attack has the parry type (kAttackTypeParry).
+bool IsPlayersParryHit(uintptr_t player, uintptr_t chrDamageModule, uintptr_t attacker, uintptr_t attackData) {
+    if (!player || attacker != player || !IsPlausiblePtr(chrDamageModule) || !IsPlausiblePtr(attackData)) {
+        return false;
     }
-    return result;
+    const uintptr_t defender = *reinterpret_cast<uintptr_t*>(chrDamageModule + kDamageModuleOwnerOffset);
+    return defender != player && IsPlausiblePtr(defender) &&
+           *reinterpret_cast<int32_t*>(attackData + kAttackDataTypeOffset) == kAttackTypeParry;
 }
 
-uint8_t __fastcall Hook_SpellParryCase2(void* bulletSubObj, void* eventPayload) {
-    uint8_t ret = g_origSpellParry(bulletSubObj, eventPayload);
-
-    if (ret != 0 && g_cfg.enabled && g_cfg.spellParry) {
-        const uintptr_t mainPlayer = GetMainPlayer();
-        const uintptr_t payload = reinterpret_cast<uintptr_t>(eventPayload);
-        if (mainPlayer != 0 && IsPlausiblePtr(payload)) {
-            const uint64_t playerHandle = *reinterpret_cast<uint64_t*>(mainPlayer + kChrInsHandleOffset);
-            const uint64_t eventHandle = *reinterpret_cast<uint64_t*>(payload + 0x08);
-            if (eventHandle == playerHandle) {
-                OnParrySucceeded("spell", mainPlayer);
-            }
-        }
+// Every hit the game hands to a character's damage module goes through here (eldenring.exe
+// 2.7.2.0: +0x444BD0, called from all hit paths; four register arguments, nothing on the stack).
+// Runs on the game's thread for every hit in the world, so the first test is the cheap one.
+void __fastcall Hook_HitEntry(void* chrDamageModule, void* attacker, void* attackData, uint64_t arg4) {
+    const uintptr_t player = reinterpret_cast<uintptr_t>(attacker) != 0 ? GetMainPlayer() : 0;
+    const bool parry = g_cfg.enabled &&
+                       IsPlayersParryHit(player, reinterpret_cast<uintptr_t>(chrDamageModule),
+                                         reinterpret_cast<uintptr_t>(attacker), reinterpret_cast<uintptr_t>(attackData));
+    g_origHitEntry(chrDamageModule, attacker, attackData, arg4);
+    if (parry) {
+        OnParrySucceeded(player);
     }
-    return ret;
 }
 
 // The parry buff is running: the node this mod timed is in the character's own effect list,
@@ -830,13 +805,15 @@ float __fastcall Hook_CalcItemDropRateSum(void* csSpecialEffect) {
 
 DWORD WINAPI InitThread(LPVOID) {
     LogLine("ParryLoot %s initializing...", kVersion);
-    LogLine("Config: enabled=%d melee_parry=%d spell_parry=%d duration=%.1fs bonus=+%.0f sp_effect_id=%d",
+    LogLine("Config: enabled=%d duration=%.1fs bonus=+%.0f sp_effect_id=%d",
             g_cfg.enabled ? 1 : 0,
-            g_cfg.meleeParry ? 1 : 0,
-            g_cfg.spellParry ? 1 : 0,
             g_cfg.durationSeconds,
             g_cfg.itemDiscoveryBonus,
             g_cfg.spEffectId);
+    if (g_obsoleteKeys) {
+        LogLine("Note: melee_parry and spell_parry in ParryLoot.ini are no longer used: since 1.0.1 the buff "
+                "comes from the parry itself (use enabled to turn it off).");
+    }
 
     if (!g_cfg.enabled) {
         LogLine("ParryLoot disabled via ParryLoot.ini.");
@@ -859,21 +836,17 @@ DWORD WINAPI InitThread(LPVOID) {
         textStart, textSize,
         "48 8b c4 48 89 58 08 48 89 70 10 57 48 81 ec c0 00 00 00 0f 28 05 ?? ?? ?? ?? 48 8b f1",
         "chr_ins_apply_speffect");
-    const uintptr_t matchResolveParry = ScanPatternUnique(
+    // The damage module's per-hit entry (see Hook_HitEntry), from its prologue on.
+    const uintptr_t matchHitEntry = ScanPatternUnique(
         textStart, textSize,
-        "48 89 5c 24 20 41 56 48 83 ec 40 48 89 6c 24 50 49 8b d8 48 89 74 24 58 48 8b ea",
-        "fn_ResolveParryStamina");
-    // Only looked for, and hooked, when spell_parry is on (see Config::spellParry).
-    const uintptr_t matchSpellParry = !g_cfg.spellParry ? 0 : ScanPatternUnique(
-        textStart, textSize,
-        "48 89 5c 24 08 48 89 74 24 10 57 48 83 ec 20 48 8b d9 48 8b fa 48 8b 0d ?? ?? ?? ?? 48 85 c9 75 2e",
-        "fn_SpellParryCase2");
+        "48 89 5c 24 18 55 56 57 48 83 ec 30 4c 89 74 24 50 49 8b d8 4c 89 7c 24 58 45 0f b6 f1 48 8b f2 48 8b f9",
+        "fn_ChrDamageModule_HitEntry");
     const uintptr_t matchDropCallSite = ScanPatternUnique(
         textStart, textSize,
         "ba 42 00 00 00 48 8b cb e8 ?? ?? ?? ?? 84 c0 74 0b 48 8b cb e8 ?? ?? ?? ?? 0f 28 f8",
         "GetItemDiscovery_CalcDropRateCall");
 
-    if (!matchWcm || !matchApply || !matchResolveParry || (g_cfg.spellParry && !matchSpellParry) || !matchDropCallSite) {
+    if (!matchWcm || !matchApply || !matchHitEntry || !matchDropCallSite) {
         LogLine("Aborting hook install due to unresolved AOB(s).");
         return 1;
     }
@@ -887,11 +860,10 @@ DWORD WINAPI InitThread(LPVOID) {
     const uintptr_t calcDropTarget = (callSite + 5) + dropRel32;
     g_origCalcDropRate = reinterpret_cast<CalcItemDropRateSumFn>(calcDropTarget);
 
-    LogLine("Resolved WorldChrMan ptr=0x%llX ApplySpEffect=0x%llX ResolveParry=0x%llX SpellParry=0x%llX CalcDropRate=0x%llX",
+    LogLine("Resolved WorldChrMan ptr=0x%llX ApplySpEffect=0x%llX HitEntry=0x%llX CalcDropRate=0x%llX",
             static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_pWorldChrMan)),
             static_cast<unsigned long long>(matchApply),
-            static_cast<unsigned long long>(matchResolveParry),
-            static_cast<unsigned long long>(matchSpellParry),
+            static_cast<unsigned long long>(matchHitEntry),
             static_cast<unsigned long long>(calcDropTarget));
 
     // Wait briefly until the game finishes initializing WorldChrMan before touching .text.
@@ -921,33 +893,19 @@ DWORD WINAPI InitThread(LPVOID) {
         return 1;
     }
 
-    g_hookAddrResolveParry = matchResolveParry;
+    // Stolen: mov [rsp+18h],rbx / push rbp / push rsi / push rdi / sub rsp,30h / mov [rsp+50h],r14.
+    // None of it is RIP-relative, and nothing in the game jumps into those 17 bytes.
+    g_hookAddrHitEntry = matchHitEntry;
     if (!InstallPrologueHook(
-            g_hookAddrResolveParry, 16,
-            reinterpret_cast<void*>(&Hook_ResolveParryStamina),
+            g_hookAddrHitEntry, kHitEntryStolenBytes,
+            reinterpret_cast<void*>(&Hook_HitEntry),
             g_trampolinePage + 0,
-            g_origBytesResolveParry,
-            reinterpret_cast<void**>(&g_origResolveParry))) {
-        LogLine("ERROR: Failed to install melee parry hook.");
+            g_origBytesHitEntry,
+            reinterpret_cast<void**>(&g_origHitEntry))) {
+        LogLine("ERROR: Failed to install the parry hook.");
         return 1;
     }
-    g_patchedResolveParry = true;
-
-    if (g_cfg.spellParry) {
-        g_hookAddrSpellParry = matchSpellParry;
-        if (!InstallPrologueHook(
-                g_hookAddrSpellParry, 15,
-                reinterpret_cast<void*>(&Hook_SpellParryCase2),
-                g_trampolinePage + 64,
-                g_origBytesSpellParry,
-                reinterpret_cast<void**>(&g_origSpellParry))) {
-            LogLine("ERROR: Failed to install spell parry hook.");
-            return 1;
-        }
-        g_patchedSpellParry = true;
-    } else {
-        LogLine("spell_parry is off, so spell parries are not hooked.");
-    }
+    g_patchedHitEntry = true;
 
     // Install call-site hook on GetItemDiscovery -> CalcItemDropRateSum if custom bonus != +50.
     if (std::fabs(g_cfg.itemDiscoveryBonus - kVanillaSilverFootBonus) >= 0.0001f) {
@@ -992,13 +950,9 @@ void Cleanup(bool processTerminating) {
             RestoreBytes(g_patchAddrDropRateCall, reinterpret_cast<const uint8_t*>(&g_origRel32DropRateCall), 4);
             g_patchedDropRateCall = false;
         }
-        if (g_patchedSpellParry) {
-            RestoreBytes(g_hookAddrSpellParry, g_origBytesSpellParry, sizeof(g_origBytesSpellParry));
-            g_patchedSpellParry = false;
-        }
-        if (g_patchedResolveParry) {
-            RestoreBytes(g_hookAddrResolveParry, g_origBytesResolveParry, sizeof(g_origBytesResolveParry));
-            g_patchedResolveParry = false;
+        if (g_patchedHitEntry) {
+            RestoreBytes(g_hookAddrHitEntry, g_origBytesHitEntry, sizeof(g_origBytesHitEntry));
+            g_patchedHitEntry = false;
         }
         if (g_trampolinePage) {
             VirtualFree(g_trampolinePage, 0, MEM_RELEASE);

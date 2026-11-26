@@ -33,7 +33,7 @@ Pulling off a clean parry in Elden Ring feels great, and when it sets up a letha
 - **Native `ERBuffTimer` countdown icon:** Stamps finite remaining/total duration onto the applied `SpEffect` (`3970`), so `ERBuffTimer` shows the Silver-Pickled Fowl Foot icon ticking down (`15` → `0`).
 - **Respects Silver-Pickled Fowl Foot consumables:** Never shortens or weakens a real `180s` (`+50`) Silver-Pickled Fowl Foot if one is already active, or if you consume one during a parry buff.
 - **Configurable via `ParryLoot.ini`:** Tune the bonus (`+25`, `+50`, etc.), duration, triggers, or logging without recompiling.
-- **Tiny & self-contained:** Compiled C++20 DLL (~71 KB) with zero external runtime dependencies (only `KERNEL32.dll` and `msvcrt.dll`), resolved at runtime via unique `.text` AOB signatures.
+- **Tiny & self-contained:** Compiled C++20 DLL (~74 KB) with zero external runtime dependencies (only `KERNEL32.dll` and `msvcrt.dll`), resolved at runtime via unique `.text` AOB signatures.
 
 ## Stacking & Arcane Limit Behaviour
 
@@ -59,11 +59,11 @@ How Elden Ring calculates Item Discovery (verified directly in `eldenring.exe` `
 
 ## Installation
 
-1. Download `ParryLoot-<version>.zip` from the [latest release](../../releases/latest) (or Nexus Mods).
-2. Install with your mod manager or manually:
-   - **Vortex:** Install the zip, enable it, deploy.
+1. Download `ParryLoot-<version>.zip` from the [latest release](../../releases/latest) or from [Nexus Mods](https://www.nexusmods.com/eldenring/mods/11747).
+2. Install it with Vortex or by hand:
+   - **Vortex:** Use *Mod Manager Download* on Nexus Mods (or drag the zip onto Vortex's Mods page), enable the mod and deploy. Vortex's Elden Ring support sets up ModEngine 2 itself, puts the DLL in the game's `mods` folder and writes `"mods\\ParryLoot.dll"` into `config_eldenring.toml` on every deploy, so skip step 3.
    - **Manual (ModEngine 2):** Extract the `mods` folder into your ModEngine 2 folder (the one with `modengine2_launcher.exe` and `config_eldenring.toml`; that is the Elden Ring `Game` folder if you installed ModEngine 2 there), so you have `mods\ParryLoot.dll` and `mods\ParryLoot.ini` next to the launcher. ModEngine 2 reads relative paths in `external_dlls` from that folder.
-3. Open `config_eldenring.toml` and add `"mods\\ParryLoot.dll"` to `external_dlls`:
+3. **Manual install only:** open `config_eldenring.toml` and add `"mods\\ParryLoot.dll"` to `external_dlls`:
 
    ```toml
    [modengine]
@@ -73,9 +73,9 @@ How Elden Ring calculates Item Discovery (verified directly in `eldenring.exe` `
    ]
    ```
 
-4. Launch the game through ModEngine 2 (**offline / non-EAC only**, as with any DLL mod).
+4. Launch the game through ModEngine 2 (**offline / non-EAC only**, as with any DLL mod). The mod writes `mods\ParryLoot.log` next to `ParryLoot.dll` each time the game starts.
 
-To uninstall, remove `"mods\\ParryLoot.dll"` from `config_eldenring.toml` and delete `mods\ParryLoot.dll`, `mods\ParryLoot.ini`, `mods\ParryLoot.log`, and `mods\ParryLoot\`.
+To uninstall with Vortex, remove the mod and deploy. By hand, remove `"mods\\ParryLoot.dll"` from `config_eldenring.toml` and delete `mods\ParryLoot.dll`, `mods\ParryLoot.ini`, `mods\ParryLoot.log`, and `mods\ParryLoot\`.
 
 ## Configuration (`mods\ParryLoot.ini`)
 
@@ -152,6 +152,9 @@ Yes. Edit `mods\ParryLoot.ini` to change `item_discovery_bonus` (e.g., `25` or `
 
 **Can I use this online / with Easy Anti-Cheat?**
 No. Like all ModEngine 2 DLL mods, play offline with EAC disabled.
+
+**My parries do nothing. What should I check?**
+`mods\ParryLoot.log` next to `ParryLoot.dll`. If it was not written when the game started, ModEngine 2 did not load the DLL: `config_eldenring.toml` must list `"mods\\ParryLoot.dll"` in `external_dlls`. Vortex rewrites that list on every deploy from the mods it installed, so with Vortex install the zip through Vortex rather than copying the files by hand. If the log has an `ERROR` or `WARNING` line, please [report it](../../issues/new/choose) with the log attached.
 
 ## Credits
 

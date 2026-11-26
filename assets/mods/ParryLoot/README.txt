@@ -11,6 +11,9 @@ Installation (ModEngine 2, offline / EAC off):
        external_dlls = [ "mods\\ParryLoot.dll" ]
    (keep any DLLs already in the list, separated by commas).
 3. Start the game with ModEngine 2. mods\ParryLoot.log shows what the mod did.
+   No log when the game starts means ModEngine 2 did not load the DLL (see step 2).
+With Vortex, install the zip through Vortex instead: it adds the DLL to
+config_eldenring.toml itself and rewrites that list on every deploy.
 
 To uninstall: remove "mods\\ParryLoot.dll" from external_dlls, then delete
 mods\ParryLoot.dll, mods\ParryLoot.ini, mods\ParryLoot.log and mods\ParryLoot\.

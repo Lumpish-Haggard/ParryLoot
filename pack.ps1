@@ -13,6 +13,8 @@
     5. Runs tools\smoke_check.py if Python is available.
     6. With -Install, copies the staged mods\ folder into -GamePath (or ELDEN_RING_GAME): your
        ModEngine 2 folder, the one with modengine2_launcher.exe (often the Elden Ring Game folder).
+       Not for a ModEngine 2 that Vortex manages: Vortex rewrites config_eldenring.toml on every
+       deploy with only the DLL mods it installed, so install the zip through Vortex instead.
 
 .EXAMPLE
     .\pack.ps1

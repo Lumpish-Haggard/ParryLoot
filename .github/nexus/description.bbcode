@@ -7,10 +7,10 @@ Open source (MIT): [url=https://github.com/Lumpish-Haggard/ParryLoot]github.com/
 
 [size=4][b]Installation instructions[/b][/size]
 [list=1]
-[*][size=3][color=#D4D4D8]Install [url=https://github.com/soulsmods/ModEngine2]ModEngine 2[/url] if you have not already.[/color][/size][/*]
-[*][size=3][color=#D4D4D8]Install the archive with Vortex, or extract the [i]mods[/i] folder into your ModEngine 2 folder (next to [i]modengine2_launcher.exe[/i] and [i]config_eldenring.toml[/i]; the Elden Ring [i]Game[/i] folder if you installed ModEngine 2 there).[/color][/size][/*]
-[*][size=3][color=#D4D4D8]Open [i]config_eldenring.toml[/i] and add [i]"mods\\ParryLoot.dll"[/i] inside [i]external_dlls = [ ... ][/i].[/color][/size][/*]
-[*][size=3][color=#D4D4D8]Launch via ModEngine 2 (offline / non-EAC only).[/color][/size][/*]
+[*][size=3][color=#D4D4D8][b]Vortex:[/b] click [i]Mod Manager Download[/i], then enable the mod and deploy. Vortex's Elden Ring support sets up ModEngine 2 itself and writes [i]"mods\\ParryLoot.dll"[/i] into [i]config_eldenring.toml[/i] on every deploy, so skip to the last step.[/color][/size][/*]
+[*][size=3][color=#D4D4D8][b]Manual:[/b] install [url=https://github.com/soulsmods/ModEngine2]ModEngine 2[/url] if you have not already, then extract the [i]mods[/i] folder into your ModEngine 2 folder (next to [i]modengine2_launcher.exe[/i] and [i]config_eldenring.toml[/i]; the Elden Ring [i]Game[/i] folder if you installed ModEngine 2 there).[/color][/size][/*]
+[*][size=3][color=#D4D4D8][b]Manual:[/b] open [i]config_eldenring.toml[/i] and add [i]"mods\\ParryLoot.dll"[/i] inside [i]external_dlls = [ ... ][/i].[/color][/size][/*]
+[*][size=3][color=#D4D4D8]Launch via ModEngine 2 (offline / non-EAC only). The mod writes [i]mods\ParryLoot.log[/i] next to [i]ParryLoot.dll[/i] each time the game starts.[/color][/size][/*]
 [/list]
 
 [size=4][b]Main features[/b][/size]
@@ -52,6 +52,8 @@ Yes. Elden Ring's [i]GetItemDiscovery[/i] caps the Arcane stat curve at 99 Arcan
 No, by design. Both share SpEffect 3970 so ERBuffTimer renders its vanilla icon cleanly. If a real 180s (+50) Silver-Pickled Fowl Foot is active, Parry Loot leaves it untouched without shortening or weakening it; eating a real Fowl Foot during Parry Loot's 15s window immediately upgrades you to the full 180s at +50.[/color][/size][/*]
 [*][size=3][color=#D4D4D8][b]Can I customize the values or use this online?[/b]
 You can tune bonus amount, duration, melee/spell triggers, and logging in [i]mods\ParryLoot.ini[/i]. Like all ModEngine 2 DLL mods, play offline with EAC disabled.[/color][/size][/*]
+[*][size=3][color=#D4D4D8][b]My parries do nothing. What should I check?[/b]
+[i]mods\ParryLoot.log[/i] next to [i]ParryLoot.dll[/i]. If it was not written when the game started, ModEngine 2 did not load the DLL: [i]config_eldenring.toml[/i] must list [i]"mods\\ParryLoot.dll"[/i] in [i]external_dlls[/i]. Vortex rewrites that list on every deploy from the mods it installed, so with Vortex install the mod through Vortex rather than copying the files by hand. If the log has an ERROR or WARNING line, please post it in the Bugs tab.[/color][/size][/*]
 [/list]
 
 [size=4][b]Shout outs[/b][/size]

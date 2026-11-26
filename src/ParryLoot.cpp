@@ -91,8 +91,58 @@ bool g_patchedDropRateCall = false;
 uintptr_t g_managedNodeAddr = 0;
 ULONGLONG g_lastParryTriggerMs = 0;
 
+// The game links a newly applied effect into the player's list a moment after ApplySpEffect
+// returns (seen in game: not in the list right after the call, there 0.4 s later with 179.6 s
+// of 180 left), and a refresh can land late the same way. So every apply is handed to
+// StampThread, which watches the list for kStampWindowMs: it sets the parry's duration as soon
+// as the effect shows up, and again if the game puts it back to the effect's own duration in that
+// time. The window ends before a real Silver-Pickled Fowl Foot could be eaten after a parry.
+constexpr ULONGLONG kStampWindowMs = 1500;
+constexpr DWORD kStampPollMs = 15;
+
+struct PendingStamp {
+    uint32_t seq = 0;         // bumped for every apply, so a pass over an older one changes nothing
+    bool active = false;
+    ULONGLONG appliedAtMs = 0;
+    const char* source = "";  // "melee" or "spell"
+    uintptr_t node = 0;       // the node this mod timed last, once known
+    int stamps = 0;           // times this apply was timed
+};
+PendingStamp g_pending{};       // guarded by g_stateLock
+HANDLE g_stampEvent = nullptr;  // auto-reset: a parry handed an apply to StampThread
+HANDLE g_stampThread = nullptr;
+
 bool IsPlausiblePtr(uintptr_t ptr) {
     return ptr >= 0x10000ULL && ptr < 0x00007FFFFFFFFFFFULL;
+}
+
+// StampThread is not the game's thread, so the game may unlink and free an effect node while that
+// thread walks the list. It reads and writes through these: a pointer that went stale gives a
+// failed read instead of an access violation. The hooks run on the game's thread and read directly.
+bool SafeRead(uintptr_t addr, void* out, size_t size) {
+    SIZE_T done = 0;
+    return IsPlausiblePtr(addr) &&
+           ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(addr), out, size, &done) &&
+           done == size;
+}
+
+template <typename T>
+bool SafeReadValue(uintptr_t addr, T& out) {
+    return SafeRead(addr, &out, sizeof(T));
+}
+
+bool SafeWrite(uintptr_t addr, const void* data, size_t size) {
+    SIZE_T done = 0;
+    return IsPlausiblePtr(addr) &&
+           WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<LPVOID>(addr), data, size, &done) &&
+           done == size;
+}
+
+template <typename T>
+T FieldAt(const uint8_t* raw, uintptr_t offset) {
+    T value;
+    std::memcpy(&value, raw + offset, sizeof(T));
+    return value;
 }
 
 void LogLine(const char* fmt, ...) {
@@ -500,8 +550,18 @@ void OnParrySucceeded(const char* source, uintptr_t mainPlayer) {
         return;
     }
     g_lastParryTriggerMs = nowMs;
+    // Another hook firing for the same parry, while the effect applied a moment ago is not timed
+    // yet: it is this mod's own effect (its node may not even be in the list yet), so leave it
+    // to StampThread.
+    const bool stillTiming = g_pending.active && g_pending.stamps == 0;
+    const ULONGLONG sinceApplyMs = nowMs - g_pending.appliedAtMs;
     const uintptr_t prevManaged = g_managedNodeAddr;
     ReleaseSRWLockExclusive(&g_stateLock);
+    if (stillTiming) {
+        LogLine("Parry (%s): the effect applied %llums ago is still being timed; not applied again.",
+                source, static_cast<unsigned long long>(sinceApplyMs));
+        return;
+    }
 
     uintptr_t spMod = GetSpecialEffectModule(mainPlayer);
     if (!spMod) {
@@ -520,43 +580,133 @@ void OnParrySucceeded(const char* source, uintptr_t mainPlayer) {
 
     g_applySpEffect(reinterpret_cast<void*>(mainPlayer), g_cfg.spEffectId, 0);
 
-    // Re-walk the SpecialEffect linked list and stamp the duration, so that the buff lasts
-    // durationSeconds instead of the effect's own (180 s for 3970) and ERBuffTimer counts it
-    // down. A node with only 0x000C0000 set right after the apply still counts (see
-    // kSpEffectGoneMask).
-    uintptr_t updatedNode = 0;
-    uint32_t updatedFlags = 0;
-    int stampedCount = 0;
-    uintptr_t node = *reinterpret_cast<uintptr_t*>(spMod + kSpecialEffectHeadNodeOffset);
-    for (int i = 0; i < 4096 && IsPlausiblePtr(node); ++i) {
-        if (IsPresentEffectNode(node)) {
-            int32_t id = *reinterpret_cast<int32_t*>(node + kSpEffectNodeEffectIdOffset);
-            if (id == g_cfg.spEffectId) {
-                *reinterpret_cast<float*>(node + kSpEffectNodeRemainingOffset) = g_cfg.durationSeconds;
-                *reinterpret_cast<float*>(node + kSpEffectNodeInitialOffset) = g_cfg.durationSeconds;
-                *reinterpret_cast<float*>(node + kSpEffectNodeTotalDurationOffset) = g_cfg.durationSeconds;
-                updatedNode = node;
-                updatedFlags = *reinterpret_cast<uint32_t*>(node + kSpEffectNodeFlagsOffset);
-                ++stampedCount;
-            }
-        }
-        node = *reinterpret_cast<uintptr_t*>(node + kSpEffectNodeNextOffset);
-    }
-
+    // Hand the apply to StampThread, which sets durationSeconds on it once its node is in the
+    // list (see kStampWindowMs) and logs the result.
     AcquireSRWLockExclusive(&g_stateLock);
-    g_managedNodeAddr = updatedNode;
+    ++g_pending.seq;
+    g_pending.active = true;
+    g_pending.appliedAtMs = GetTickCount64();
+    g_pending.source = source;
+    g_pending.node = prevManaged;  // a refresh of the node timed last can land late too
+    g_pending.stamps = 0;
     ReleaseSRWLockExclusive(&g_stateLock);
+    if (g_stampEvent) {
+        SetEvent(g_stampEvent);
+    }
+}
 
-    if (updatedNode == 0) {
-        LogLine("WARNING: Parry (%s): applied SpEffect %d, but its node was not in the effect list yet, so its "
-                "duration could not be set: the effect's own duration and Item Discovery apply this time.",
-                source, g_cfg.spEffectId);
+// One look at the effect list for the latest apply. Runs on StampThread.
+void ServicePendingStamp() {
+    AcquireSRWLockShared(&g_stateLock);
+    const PendingStamp p = g_pending;
+    ReleaseSRWLockShared(&g_stateLock);
+    if (!p.active) {
         return;
     }
-    LogLine("Parry (%s) -> applied SpEffect %d for %.1fs (+%.0f Item Discovery) [node 0x%llX, flags 0x%08X%s].",
-            source, g_cfg.spEffectId, g_cfg.durationSeconds, g_cfg.itemDiscoveryBonus,
-            static_cast<unsigned long long>(updatedNode), updatedFlags,
-            stampedCount > 1 ? ", more than one node" : "");
+
+    const ULONGLONG elapsedMs = GetTickCount64() - p.appliedAtMs;
+    const float elapsed = static_cast<float>(elapsedMs) / 1000.0f;
+    const float duration = g_cfg.durationSeconds;
+
+    // The parry's effect: the game gave it the effect's own duration (longer than ours) and
+    // started its countdown at the apply. Or the node this mod timed, if the game has put it
+    // back to a longer time since. A parry is applied only when no longer SpEffect is running,
+    // so within the window such a node can only be this mod's.
+    uintptr_t found = 0;
+    float foundRem = 0.0f;
+    float foundTotal = 0.0f;
+    uint32_t foundFlags = 0;
+    uintptr_t wcm = 0;
+    uintptr_t player = 0;
+    uintptr_t spMod = 0;
+    uintptr_t node = 0;
+    if (g_pWorldChrMan && SafeReadValue(reinterpret_cast<uintptr_t>(g_pWorldChrMan), wcm) &&
+        SafeReadValue(wcm + kWorldChrManMainPlayerOffset, player) &&
+        SafeReadValue(player + kChrInsSpecialEffectOffset, spMod) &&
+        SafeReadValue(spMod + kSpecialEffectHeadNodeOffset, node)) {
+        // One read per node: everything up to and including the flags.
+        uint8_t raw[kSpEffectNodeFlagsOffset + sizeof(uint32_t)] = {};
+        for (int i = 0; i < 4096 && SafeRead(node, raw, sizeof(raw)); ++i) {
+            const uint32_t flags = FieldAt<uint32_t>(raw, kSpEffectNodeFlagsOffset);
+            if ((flags & kSpEffectGoneMask) == 0 &&
+                FieldAt<int32_t>(raw, kSpEffectNodeEffectIdOffset) == g_cfg.spEffectId) {
+                const float rem = FieldAt<float>(raw, kSpEffectNodeRemainingOffset);
+                const float total = FieldAt<float>(raw, kSpEffectNodeTotalDurationOffset);
+                const bool fresh = total > duration + 0.05f && std::fabs(rem - (total - elapsed)) <= 1.0f;
+                const bool putBack = node == p.node && rem > duration + 0.05f;
+                if (fresh || putBack) {
+                    found = node;
+                    foundRem = rem;
+                    foundTotal = total;
+                    foundFlags = flags;
+                    break;
+                }
+            }
+            node = FieldAt<uintptr_t>(raw, kSpEffectNodeNextOffset);
+        }
+    }
+
+    // Counted from the parry, so a late stamp does not make the buff last longer.
+    float remaining = duration - elapsed;
+    if (remaining < 0.1f) {
+        remaining = 0.1f;
+    }
+    // remaining, initial and total duration sit next to each other.
+    static_assert(kSpEffectNodeInitialOffset == kSpEffectNodeRemainingOffset + 4 &&
+                      kSpEffectNodeTotalDurationOffset == kSpEffectNodeRemainingOffset + 8,
+                  "node duration fields are expected to be contiguous");
+    const float times[3] = {remaining, duration, duration};
+    if (found && SafeWrite(found + kSpEffectNodeRemainingOffset, times, sizeof(times))) {
+        int stamps = 0;
+        AcquireSRWLockExclusive(&g_stateLock);
+        if (g_pending.seq == p.seq) {
+            g_pending.node = found;
+            stamps = ++g_pending.stamps;
+            g_managedNodeAddr = found;
+        }
+        ReleaseSRWLockExclusive(&g_stateLock);
+
+        if (stamps == 1) {
+            LogLine("Parry (%s) -> applied SpEffect %d for %.1fs (+%.0f Item Discovery) [node 0x%llX, flags 0x%08X, "
+                    "timed %llums after the apply].",
+                    p.source, g_cfg.spEffectId, duration, g_cfg.itemDiscoveryBonus,
+                    static_cast<unsigned long long>(found), foundFlags,
+                    static_cast<unsigned long long>(elapsedMs));
+        } else if (stamps > 1) {
+            LogLine("Parry (%s): the game put SpEffect %d back to %.1fs of %.1fs; timed it again to %.1fs.",
+                    p.source, g_cfg.spEffectId, foundRem, foundTotal, remaining);
+        }
+    }
+
+    if (elapsedMs >= kStampWindowMs) {
+        bool missed = false;
+        AcquireSRWLockExclusive(&g_stateLock);
+        if (g_pending.seq == p.seq && g_pending.active) {
+            g_pending.active = false;
+            missed = g_pending.stamps == 0;
+        }
+        ReleaseSRWLockExclusive(&g_stateLock);
+        if (missed) {
+            LogLine("WARNING: Parry (%s): SpEffect %d did not show up in the effect list within %llums, so its own "
+                    "duration and Item Discovery apply this time.",
+                    p.source, g_cfg.spEffectId, static_cast<unsigned long long>(kStampWindowMs));
+        }
+    }
+}
+
+// Waits for applies and watches each one for kStampWindowMs. Stops on g_stopEvent.
+DWORD WINAPI StampThread(LPVOID) {
+    const HANDLE waits[2] = {g_stopEvent, g_stampEvent};
+    for (;;) {
+        AcquireSRWLockShared(&g_stateLock);
+        const bool watching = g_pending.active;
+        ReleaseSRWLockShared(&g_stateLock);
+        const DWORD r = WaitForMultipleObjects(2, waits, FALSE, watching ? kStampPollMs : INFINITE);
+        if (r == WAIT_OBJECT_0 || r == WAIT_FAILED) {
+            return 0;
+        }
+        ServicePendingStamp();
+    }
 }
 
 float __fastcall Hook_ResolveParryStamina(void* chrDamageModule, void* attackerChrIns, void* attackData) {
@@ -728,6 +878,14 @@ DWORD WINAPI InitThread(LPVOID) {
         return 0;
     }
 
+    // Before the hooks go live: without it every parry would get the effect's own 180 s.
+    g_stampEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    g_stampThread = g_stampEvent ? CreateThread(nullptr, 0, StampThread, nullptr, 0, nullptr) : nullptr;
+    if (!g_stampThread) {
+        LogLine("ERROR: Could not start the thread that times the buff; hooks not installed.");
+        return 1;
+    }
+
     g_trampolinePage = AllocExecutableNear(reinterpret_cast<uintptr_t>(textStart), 4096);
     if (!g_trampolinePage) {
         LogLine("ERROR: Could not allocate executable trampoline page within +-2GB of .text.");
@@ -794,6 +952,9 @@ void Cleanup(bool processTerminating) {
     }
     if (!processTerminating && g_initThread) {
         WaitForSingleObject(g_initThread, 2000);
+        if (g_stampThread) {
+            WaitForSingleObject(g_stampThread, 2000);
+        }
         if (g_patchedDropRateCall) {
             RestoreBytes(g_patchAddrDropRateCall, reinterpret_cast<const uint8_t*>(&g_origRel32DropRateCall), 4);
             g_patchedDropRateCall = false;
@@ -814,6 +975,14 @@ void Cleanup(bool processTerminating) {
     if (g_initThread) {
         CloseHandle(g_initThread);
         g_initThread = nullptr;
+    }
+    if (g_stampThread) {
+        CloseHandle(g_stampThread);
+        g_stampThread = nullptr;
+    }
+    if (g_stampEvent) {
+        CloseHandle(g_stampEvent);
+        g_stampEvent = nullptr;
     }
     if (g_stopEvent) {
         CloseHandle(g_stopEvent);

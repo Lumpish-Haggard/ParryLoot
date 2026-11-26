@@ -40,7 +40,7 @@ python tools/nexus_page.py check
 
 ## Testing in game
 
-`.\pack.ps1 -Build -Install -GamePath "<your ModEngine 2 folder>"` builds the DLL and copies it next to `modengine2_launcher.exe` (it never overwrites an existing `ParryLoot.ini`). If Vortex manages your ModEngine 2, install `dist\ParryLoot-<version>.zip` through Vortex instead (drag it onto the Mods page, enable, deploy): Vortex rewrites `config_eldenring.toml` on every deploy and lists only the DLL mods it installed from an archive, so a copied DLL is never loaded. With ERBuffTimer loaded you can watch the buff's timer. Check, and keep `mods\ParryLoot.log` from the session:
+`.\pack.ps1 -Build -Install -GamePath "<your ModEngine 2 folder>"` builds the DLL and copies it next to `modengine2_launcher.exe` (it never overwrites an existing `ParryLoot.ini`). If Vortex manages your ModEngine 2, install `dist\ParryLoot-<version>.zip` through Vortex instead (drag it onto the Mods page, enable, deploy) and check that `config_eldenring.toml` lists `"mods\\ParryLoot.dll"`. Vortex rewrites that file only when its load order changes, with the DLL mods it installed from an archive: a copied DLL is dropped, and a newly installed one waits for the next change (drag any entry on the Load Order tab one place down and back, or add the line by hand). With ERBuffTimer loaded you can watch the buff's timer. Check, and keep `mods\ParryLoot.log` from the session:
 
 1. **Melee parry** (a shield's Parry, Buckler Parry or Golden Parry): one `applied ... for 15.0s` line, the timer counts down from 15, the status screen's Discovery is 25 higher while it runs, and it is gone after 15 s.
 2. **A second parry within 15 s** refreshes it (another `applied` line, not `already runs longer`).

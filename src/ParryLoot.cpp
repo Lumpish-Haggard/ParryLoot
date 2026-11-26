@@ -12,7 +12,7 @@ namespace {
 
 // Keep equal to the VERSION file (tools/smoke_check.py checks it). Written to the first log
 // line so that a bug report's ParryLoot.log says which build it came from.
-constexpr char kVersion[] = "1.0.0";
+constexpr char kVersion[] = "1.0.1";
 
 // Verified offsets for Elden Ring App Ver. 1.17.2 (exe 2.7.2.0)
 constexpr uintptr_t kWorldChrManMainPlayerOffset = 0x1E508;
@@ -45,7 +45,9 @@ constexpr float kVanillaSilverFootBonus = 50.0f;
 struct Config {
     bool enabled = true;
     bool meleeParry = true;
-    bool spellParry = true;
+    // Off by default: the hooked event also fires when a parry skill is used and hits nothing
+    // (twice per use, about 0.4 s apart; seen in game with 1.0.0), so it is not a parry check.
+    bool spellParry = false;
     bool logEnabled = true;
     int32_t spEffectId = kDefaultSpEffectId;
     float durationSeconds = 15.0f;
@@ -752,6 +754,53 @@ uint8_t __fastcall Hook_SpellParryCase2(void* bulletSubObj, void* eventPayload) 
     return ret;
 }
 
+// The parry buff is running: the node this mod timed is in the character's own effect list,
+// active, and still at the parry's duration. A real Silver-Pickled Fowl Foot eaten on top of it
+// puts it back to 180 s, and then its full +50 counts. Runs on the game's thread.
+bool ParryBuffActive() {
+    const uintptr_t spMod = GetSpecialEffectModule(GetMainPlayer());
+    if (!spMod) {
+        return false;
+    }
+    AcquireSRWLockShared(&g_stateLock);
+    const uintptr_t managed = g_managedNodeAddr;
+    ReleaseSRWLockShared(&g_stateLock);
+    if (!managed) {
+        return false;
+    }
+    uintptr_t node = *reinterpret_cast<uintptr_t*>(spMod + kSpecialEffectHeadNodeOffset);
+    for (int i = 0; i < 4096 && IsPlausiblePtr(node); ++i) {
+        if (node == managed) {
+            if (!IsActiveEffectNode(node)) {
+                return false;
+            }
+            const int32_t id = *reinterpret_cast<int32_t*>(node + kSpEffectNodeEffectIdOffset);
+            const float rem = *reinterpret_cast<float*>(node + kSpEffectNodeRemainingOffset);
+            const float total = *reinterpret_cast<float*>(node + kSpEffectNodeTotalDurationOffset);
+            return id == g_cfg.spEffectId && rem > 0.0f && total <= g_cfg.durationSeconds + 0.05f;
+        }
+        node = *reinterpret_cast<uintptr_t*>(node + kSpEffectNodeNextOffset);
+    }
+    return false;
+}
+
+// The list being added up counts the effect the way CalcItemDropRateSum does: an active node of
+// it with a param.
+bool ListCountsEffect(uintptr_t specialEffect, int32_t effectId) {
+    if (!IsPlausiblePtr(specialEffect)) {
+        return false;
+    }
+    uintptr_t node = *reinterpret_cast<uintptr_t*>(specialEffect + kSpecialEffectHeadNodeOffset);
+    for (int i = 0; i < 4096 && IsPlausiblePtr(node); ++i) {
+        if (IsActiveEffectNode(node) && *reinterpret_cast<int32_t*>(node + kSpEffectNodeEffectIdOffset) == effectId &&
+            *reinterpret_cast<uintptr_t*>(node) != 0) {
+            return true;
+        }
+        node = *reinterpret_cast<uintptr_t*>(node + kSpEffectNodeNextOffset);
+    }
+    return false;
+}
+
 float __fastcall Hook_CalcItemDropRateSum(void* csSpecialEffect) {
     float sum = g_origCalcDropRate(csSpecialEffect);
 
@@ -764,38 +813,17 @@ float __fastcall Hook_CalcItemDropRateSum(void* csSpecialEffect) {
         return sum;
     }
 
-    const uintptr_t mainPlayer = GetMainPlayer();
-    const uintptr_t playerSpMod = GetSpecialEffectModule(mainPlayer);
-    if (!playerSpMod || reinterpret_cast<uintptr_t>(csSpecialEffect) != playerSpMod) {
+    // GetItemDiscovery, the only caller, works out the player's Item Discovery from the effect
+    // list it is handed, and that is not always the character's own (ChrIns+0x178): the status
+    // screen hands it a list kept in PlayerGameData (+0xA80 or +0xA90), which 1.0.0 left alone,
+    // so the screen showed the effect's full +50. Whether the parry buff runs is decided on the
+    // character's own list; every list that counts the effect then gets the same correction.
+    if (!ParryBuffActive() || !ListCountsEffect(reinterpret_cast<uintptr_t>(csSpecialEffect), g_cfg.spEffectId)) {
         return sum;
     }
-
-    AcquireSRWLockShared(&g_stateLock);
-    const uintptr_t managed = g_managedNodeAddr;
-    ReleaseSRWLockShared(&g_stateLock);
-
-    bool ourBuffActive = false;
-    uintptr_t node = *reinterpret_cast<uintptr_t*>(playerSpMod + kSpecialEffectHeadNodeOffset);
-    for (int i = 0; i < 4096 && IsPlausiblePtr(node); ++i) {
-        if (node == managed && IsActiveEffectNode(node)) {
-            int32_t id = *reinterpret_cast<int32_t*>(node + kSpEffectNodeEffectIdOffset);
-            float rem = *reinterpret_cast<float*>(node + kSpEffectNodeRemainingOffset);
-            float total = *reinterpret_cast<float*>(node + kSpEffectNodeTotalDurationOffset);
-            // If the player consumed a real 180s Silver-Pickled Fowl Foot on top of our buff,
-            // its duration becomes 180s (> durationSeconds), so restore vanilla +50 bonus.
-            if (id == g_cfg.spEffectId && rem > 0.0f && total <= g_cfg.durationSeconds + 0.05f) {
-                ourBuffActive = true;
-            }
-            break;
-        }
-        node = *reinterpret_cast<uintptr_t*>(node + kSpEffectNodeNextOffset);
-    }
-
-    if (ourBuffActive) {
-        sum += delta;
-        if (sum < 0.0f) {
-            sum = 0.0f;
-        }
+    sum += delta;
+    if (sum < 0.0f) {
+        sum = 0.0f;
     }
     return sum;
 }
@@ -835,7 +863,8 @@ DWORD WINAPI InitThread(LPVOID) {
         textStart, textSize,
         "48 89 5c 24 20 41 56 48 83 ec 40 48 89 6c 24 50 49 8b d8 48 89 74 24 58 48 8b ea",
         "fn_ResolveParryStamina");
-    const uintptr_t matchSpellParry = ScanPatternUnique(
+    // Only looked for, and hooked, when spell_parry is on (see Config::spellParry).
+    const uintptr_t matchSpellParry = !g_cfg.spellParry ? 0 : ScanPatternUnique(
         textStart, textSize,
         "48 89 5c 24 08 48 89 74 24 10 57 48 83 ec 20 48 8b d9 48 8b fa 48 8b 0d ?? ?? ?? ?? 48 85 c9 75 2e",
         "fn_SpellParryCase2");
@@ -844,7 +873,7 @@ DWORD WINAPI InitThread(LPVOID) {
         "ba 42 00 00 00 48 8b cb e8 ?? ?? ?? ?? 84 c0 74 0b 48 8b cb e8 ?? ?? ?? ?? 0f 28 f8",
         "GetItemDiscovery_CalcDropRateCall");
 
-    if (!matchWcm || !matchApply || !matchResolveParry || !matchSpellParry || !matchDropCallSite) {
+    if (!matchWcm || !matchApply || !matchResolveParry || (g_cfg.spellParry && !matchSpellParry) || !matchDropCallSite) {
         LogLine("Aborting hook install due to unresolved AOB(s).");
         return 1;
     }
@@ -904,17 +933,21 @@ DWORD WINAPI InitThread(LPVOID) {
     }
     g_patchedResolveParry = true;
 
-    g_hookAddrSpellParry = matchSpellParry;
-    if (!InstallPrologueHook(
-            g_hookAddrSpellParry, 15,
-            reinterpret_cast<void*>(&Hook_SpellParryCase2),
-            g_trampolinePage + 64,
-            g_origBytesSpellParry,
-            reinterpret_cast<void**>(&g_origSpellParry))) {
-        LogLine("ERROR: Failed to install spell parry hook.");
-        return 1;
+    if (g_cfg.spellParry) {
+        g_hookAddrSpellParry = matchSpellParry;
+        if (!InstallPrologueHook(
+                g_hookAddrSpellParry, 15,
+                reinterpret_cast<void*>(&Hook_SpellParryCase2),
+                g_trampolinePage + 64,
+                g_origBytesSpellParry,
+                reinterpret_cast<void**>(&g_origSpellParry))) {
+            LogLine("ERROR: Failed to install spell parry hook.");
+            return 1;
+        }
+        g_patchedSpellParry = true;
+    } else {
+        LogLine("spell_parry is off, so spell parries are not hooked.");
     }
-    g_patchedSpellParry = true;
 
     // Install call-site hook on GetItemDiscovery -> CalcItemDropRateSum if custom bonus != +50.
     if (std::fabs(g_cfg.itemDiscoveryBonus - kVanillaSilverFootBonus) >= 0.0001f) {

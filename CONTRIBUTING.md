@@ -44,8 +44,8 @@ python tools/nexus_page.py check
 
 1. **Melee parry** (a shield's Parry, Buckler Parry or Golden Parry): one `applied ... for 15.0s` line, the timer counts down from 15, the status screen's Discovery is 25 higher while it runs, and it is gone after 15 s.
 2. **A second parry within 15 s** refreshes it (another `applied` line, not `already runs longer`).
-3. **Spell parry** (Carian Retaliation or Thops's Barrier against a sorcery): one `applied (spell)` line.
-4. **Nothing else triggers it:** whiffed parries, blocks, Guard Counters, rolls, your own spells, getting hit. Any `Parry (...)` line you did not cause is a bug.
+3. **Spell parry** (only with `spell_parry = true`, off by default; Carian Retaliation or Thops's Barrier against a sorcery): one `applied (spell)` line. Known problem: this trigger also fires twice for a parry that hits nothing, which is why it is off by default.
+4. **Nothing else triggers it:** whiffed parries, blocks, Guard Counters, rolls, your own spells, getting hit. Any `Parry (...)` line you did not cause is a bug. With `spell_parry = false` the log says `spell_parry is off` at start and never shows `Parry (spell)`.
 5. **A real Silver-Pickled Fowl Foot**: eaten before a parry, it keeps its 180 s and +50; eaten during the 15 s buff, it gives the full 180 s and +50.
 6. A `WARNING` line in the log is a bug: report it with the log.
 

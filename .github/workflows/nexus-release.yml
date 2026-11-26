@@ -54,8 +54,8 @@ env:
   # Unique Mod ID of nexusmods.com/eldenring/mods/11747 (Elden Ring is game 4333 on Nexus:
   # 4333 * 2^32 + 11747). Empty = check only, nothing is sent.
   NEXUS_MOD_ID: "18610093305315"
-  # File ID of the main file. Empty until the first release creates that file.
-  NEXUS_FILE_ID: ""
+  # File ID of the main file (same place, "File ID"). Empty until the first release creates it.
+  NEXUS_FILE_ID: "8463924"
   # Nexus allows only letters, digits, spaces and _ ' ( ) . - in a file name, at most 50 characters.
   NEXUS_DISPLAY_NAME: "Parry Loot"
   # At most 255 characters (enforced by Nexus from 2026-11-23).

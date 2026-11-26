@@ -25,7 +25,8 @@ Configuration (mods\ParryLoot.ini):
 - duration = 15.0              Seconds the buff lasts (0.5 - 170.0)
 - item_discovery_bonus = 25    Item Discovery added (+25 vanilla-friendly; 50 = Silver Fowl Foot)
 - melee_parry = true           Trigger on melee weapon/shield parries (including Golden Parry)
-- spell_parry = true           Trigger on projectile/spell parries (Carian Retaliation / Thops's Barrier)
+- spell_parry = false          Projectile/spell parries (Carian Retaliation / Thops's Barrier). Off by
+                               default: its trigger also fires when a parry hits nothing.
 - sp_effect_id = 3970          SpEffect used (3970 = Silver-Pickled Fowl Foot icon; keep it:
                                the bonus is set relative to that effect's own +50)
 - log = true                   Write mods\ParryLoot.log
